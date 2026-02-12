@@ -1,4 +1,5 @@
 require("dotenv").config();
+console.log("🚨 TEST_DATE FROM ENV:", process.env.TEST_DATE);
 const { Client, GatewayIntentBits } = require("discord.js");
 const { google } = require("googleapis");
 
