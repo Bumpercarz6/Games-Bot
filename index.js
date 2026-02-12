@@ -1,113 +1,91 @@
-/***********************
- * REQUIRED LIBRARIES
- ***********************/
 require("dotenv").config();
 const { Client, GatewayIntentBits } = require("discord.js");
 const { google } = require("googleapis");
 
-/***********************
- * DISCORD CLIENT
- ***********************/
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
 
-/***********************
+/**********************
+ * CONFIG
+ **********************/
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+const RESULTS_SHEET = "Results";
+const CHANNEL_ID = process.env.GAMES_CHANNEL_ID;
+const TIMEZONE = "America/Edmonton";
+
+/**********************
  * GOOGLE AUTH
- ***********************/
+ **********************/
 const auth = new google.auth.GoogleAuth({
   credentials: {
     client_email: process.env.GOOGLE_CLIENT_EMAIL,
-    private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n")
+    private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
   },
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"]
+  scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
 });
 
 const sheets = google.sheets({ version: "v4", auth });
 
-/***********************
- * CONFIG
- ***********************/
-const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
-const RESULTS_SHEET = "Results"; // must exist
+/**********************
+ * GET TODAY DATE
+ **********************/
+function todayISO() {
+  return new Date().toLocaleDateString("en-CA", {
+    timeZone: TIMEZONE,
+  });
+}
 
-/***********************
- * READY — REGISTER COMMAND
- ***********************/
-client.once("ready", async () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
+/**********************
+ * FETCH TODAY GAMES
+ **********************/
+async function getTodayGames() {
+  const date = todayISO();
 
-  await client.application.commands.create({
-    name: "final",
-    description: "Enter a final WHL game result",
-    options: [
-      { name: "date", description: "YYYY-MM-DD", type: 3, required: true },
-      { name: "home", description: "Home team", type: 3, required: true },
-      { name: "away", description: "Away team", type: 3, required: true },
-      { name: "home_score", description: "Home score", type: 4, required: true },
-      { name: "away_score", description: "Away score", type: 4, required: true },
-      {
-        name: "status",
-        description: "Final / OT / SO",
-        type: 3,
-        required: true,
-        choices: [
-          { name: "Final", value: "FINAL" },
-          { name: "OT", value: "OT" },
-          { name: "SO", value: "SO" }
-        ]
-      }
-    ]
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${RESULTS_SHEET}!A2:C`, // Date, Home, Away only
   });
 
-  console.log("✅ /final command registered");
-});
+  const rows = res.data.values || [];
 
-/***********************
- * COMMAND HANDLER
- ***********************/
-client.on("interactionCreate", async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName !== "final") return;
+  return rows.filter(r => r[0] === date);
+}
 
-  await interaction.deferReply({ ephemeral: true });
+/**********************
+ * POST GAMES
+ **********************/
+async function postGames() {
+  const channel = await client.channels.fetch(CHANNEL_ID);
+  const games = await getTodayGames();
+  const date = todayISO();
 
-  try {
-    const date = interaction.options.getString("date");
-    const home = interaction.options.getString("home");
-    const away = interaction.options.getString("away");
-    const homeScore = interaction.options.getInteger("home_score");
-    const awayScore = interaction.options.getInteger("away_score");
-    const status = interaction.options.getString("status");
-
-    const row = [
-      date,
-      home,
-      away,
-      homeScore,
-      awayScore,
-      status
-    ];
-
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `${RESULTS_SHEET}!A:F`,
-      valueInputOption: "RAW",
-      requestBody: {
-        values: [row]
-      }
-    });
-
-    await interaction.editReply("✅ Result saved to sheet.");
-    console.log("✅ Result written:", row);
-
-  } catch (err) {
-    console.error("❌ RESULT ERROR:", err);
-    await interaction.editReply("❌ Failed to write result. Check logs.");
+  if (!games.length) {
+    await channel.send(`🏒 **${date}**\nNo games today.`);
+    return;
   }
+
+  let message = `🏒 **WHL Games — ${date}**\n\n`;
+
+  games.forEach(g => {
+    const [, home, away] = g;
+    message += `${away} @ ${home}\n`;
+  });
+
+  await channel.send(message);
+}
+
+/**********************
+ * READY
+ **********************/
+client.once("ready", async () => {
+  console.log("Morning Games Bot Ready");
+
+  await postGames();
+  process.exit(0); // VERY important for Railway cron
 });
 
-/***********************
+/**********************
  * LOGIN
- ***********************/
-client.login(process.env.DISCORD_TOKEN);
+ **********************/
+client.login(process.env.BOT_TOKEN);
